@@ -2708,7 +2708,10 @@ async def test_key_window_writers_keep_committed_resets_without_merging_admin_ed
     )
     from litellm.proxy.utils import PrismaClient
 
-    original: Final = {"budget_duration": "1d", "max_budget": 10.0, "reset_at": "2030-01-02T00:00:00+00:00"}
+    original: Final = {
+        "budget_duration": "1d", "max_budget": 10.0,
+        "reset_at": "2030-01-02T00:00:00+00:00", "window_start": "2030-01-01T00:00:00+00:00",
+    }
     siblings: Final = [sibling] if sibling is not None else []
     existing: Final = LiteLLM_VerificationToken(token="window-key", budget_limits=[original, *siblings])
     proposed: Final = [{**original, "max_budget": 50.0}, {
@@ -2719,6 +2722,7 @@ async def test_key_window_writers_keep_committed_resets_without_merging_admin_ed
     tx: Final = database.tx.return_value.__aenter__.return_value
     tx.query_raw = AsyncMock(return_value=[{"budget_limits": [{
         **original, "max_budget": current_cap, "reset_at": current_reset,
+        "window_start": (datetime.fromisoformat(current_reset) - timedelta(days=1)).isoformat(),
     }, *siblings]}])
     tx.litellm_verificationtoken.update = AsyncMock(return_value=existing)
     tx.litellm_verificationtoken.update_many = AsyncMock(return_value=1)
@@ -2739,7 +2743,10 @@ async def test_key_window_writers_keep_committed_resets_without_merging_admin_ed
 
     write: Final = tx.litellm_verificationtoken.update_many if writer == "project" else tx.litellm_verificationtoken.update
     assert json.loads(write.call_args.kwargs["data"]["budget_limits"]) == [
-        {**proposed[0], "reset_at": expected_reset}, proposed[1],
+        {
+            **proposed[0], "reset_at": expected_reset,
+            "window_start": (datetime.fromisoformat(expected_reset) - timedelta(days=1)).isoformat(),
+        }, proposed[1],
     ]
     assert tx.query_raw.await_count == 1
     assert database.tx.return_value.__aexit__.await_count == 1
