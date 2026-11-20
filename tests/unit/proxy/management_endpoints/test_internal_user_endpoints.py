@@ -6082,7 +6082,7 @@ async def test_user_info_v2_reports_current_spend_per_budget_window(mocker):
             "window_entity_type": "User",
             "window_entity_id": "window-user",
             "window_duration": "30d",
-            "window_start": datetime(2026, 8, 15, 0, 0, tzinfo=timezone.utc),
+            "window_start": datetime(2026, 8, 14, 0, 0, tzinfo=timezone.utc),
         },
     ]
 
