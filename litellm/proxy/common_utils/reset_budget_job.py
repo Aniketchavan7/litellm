@@ -1113,7 +1113,12 @@ class ResetBudgetJob:
             budget_resets=tuple(
                 (
                     b.budget_id,
-                    compute_budget_reset_at(budget_duration=b.budget_duration, settings=self.reset_settings, now=now),
+                    compute_budget_reset_at(
+                        budget_duration=b.budget_duration,
+                        settings=self.reset_settings,
+                        now=now,
+                        previous_reset=b.budget_reset_at,
+                    ),
                 )
                 for b in budgets_to_reset
                 if b.budget_id is not None and b.budget_id in windows and b.budget_duration is not None
@@ -1929,7 +1934,9 @@ class ResetBudgetJob:
         saved_reset_at: Final = datetime.fromisoformat(reset_at_str.replace("Z", "+00:00"))
         if _as_utc(saved_reset_at) > _as_utc(now):
             return None
-        return compute_budget_reset_at(budget_duration=budget_duration, settings=reset_settings, now=now)
+        return compute_budget_reset_at(
+            budget_duration=budget_duration, settings=reset_settings, now=now, previous_reset=saved_reset_at
+        )
 
     @staticmethod
     async def _roll_window_spend_row(
@@ -2139,6 +2146,7 @@ class ResetBudgetJob:
                     budget_duration=item.budget_duration,
                     settings=reset_settings,
                     now=current_time,
+                    previous_reset=item.budget_reset_at,
                 )
             return item
         except Exception as e:

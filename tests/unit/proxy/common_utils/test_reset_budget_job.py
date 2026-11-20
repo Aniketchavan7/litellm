@@ -111,6 +111,32 @@ async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_ho
     assert get_budget_window_start(window, settings) == datetime.fromisoformat(previous_reset)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", ("24h", "daily"))
+async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(duration: str) -> None:
+    settings: Final = BudgetResetSettings(timezone="America/New_York")
+    boundary = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
+    key: Final = LiteLLM_VerificationToken(
+        token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=boundary,
+    )
+    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": boundary.isoformat()}
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+    for _ in range(4):
+        expected: Final = boundary + timedelta(hours=24)
+        scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, boundary, settings)
+        changed: Final = await ResetBudgetJob._reset_expired_window(
+            window, "spend:key:daily-key:window:" + duration, FakeSpendCounters().store(), boundary, settings,
+            client, reset_budget_job_module.Litellm_EntityType.KEY, "daily-key",
+        )
+        assert scalar is not None and scalar.budget_reset_at is not None
+        assert scalar.budget_reset_at.astimezone(timezone.utc) == expected
+        assert changed and datetime.fromisoformat(window["reset_at"]) == expected
+        assert get_budget_window_start(window, settings) == boundary
+        boundary = expected
+
+
 @pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("12mo", 1, 1)))
 def test_budget_table_window_uses_the_sweep_clock(duration: str, end_month: int, end_day: int) -> None:
     zone: Final = ZoneInfo("America/New_York")

@@ -234,6 +234,7 @@ from litellm.proxy.management_helpers.team_metadata_validation import (
 from litellm.proxy.management_helpers.utils import (
     MemberWriteTx,
     add_new_member,
+    budget_windows_json,
     management_endpoint_wrapper,
 )
 from litellm.proxy.spend_tracking.committed_spend import drop_committed_spend
@@ -3146,11 +3147,7 @@ def _set_budget_reset_at(data: UpdateTeamRequest, updated_kv: dict, existing_tea
         updated_kv["budget_reset_at"] = None
 
     if data.budget_limits is not None and len(data.budget_limits) > 0:
-        initialized_windows: Final = []
-        for window in data.budget_limits:
-            w = window if isinstance(window, dict) else window.model_dump()
-            initialized_windows.append({**w, **get_budget_window_reset_fields(str(w["budget_duration"]))})
-        updated_kv["budget_limits"] = json.dumps(initialized_windows)
+        updated_kv["budget_limits"] = budget_windows_json(data.budget_limits, existing_team.budget_limits)
 
 
 async def handle_update_object_permission(

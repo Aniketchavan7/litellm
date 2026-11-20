@@ -66,7 +66,11 @@ def get_budget_reset_settings() -> BudgetResetSettings:
 
 
 def compute_budget_reset_at(
-    budget_duration: str, settings: BudgetResetSettings, now: datetime | None = None
+    budget_duration: str,
+    settings: BudgetResetSettings,
+    now: datetime | None = None,
+    *,
+    previous_reset: datetime | None = None,
 ) -> datetime:
     """Compute the next reset time for a budget duration using injected settings."""
     return get_next_standardized_reset_time(
@@ -74,6 +78,7 @@ def compute_budget_reset_at(
         current_time=now if now is not None else datetime.now(timezone.utc),
         timezone_str=settings.timezone,
         reset_time_of_day=settings.reset_time_of_day,
+        elapsed_anchor=previous_reset,
     )
 
 

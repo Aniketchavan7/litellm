@@ -871,3 +871,18 @@ def test_new_customer_hourly_window_includes_current_usage_through_dst(
 
     assert counter.window_start == datetime.fromisoformat(expected_start)
     assert counter.reset_at == datetime.fromisoformat(expected_end)
+
+
+@pytest.mark.parametrize("days_after_reset", (0, 1, 2, 30))
+def test_expired_customer_elapsed_schedule_keeps_its_saved_anchor(days_after_reset: int) -> None:
+    saved_reset: Final = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
+    start: Final = saved_reset + timedelta(days=days_after_reset)
+    counter: Final = customer_window_counters(
+        "customer_team", "daily-team",
+        (BudgetLimit(budget_duration="24h", max_budget=1, reset_at=saved_reset),),
+        now=start + timedelta(minutes=1),
+        reset_settings=BudgetResetSettings(timezone="America/New_York"),
+    )[0]
+
+    assert counter.window_start == start
+    assert counter.reset_at == start + timedelta(hours=24)

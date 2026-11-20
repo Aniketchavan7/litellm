@@ -101,9 +101,9 @@ class TestStandardizedResetTime(unittest.TestCase):
         self.assertEqual(ist_result, ist_expected)
 
         # Test hourly reset in different timezones
-        # US/Pacific (UTC-7): 3:30 PM, so next 2h reset is 4:00 PM
+        # Elapsed schedules align in UTC: next even UTC hour is 00:00 (5 PM Pacific).
         pacific = ZoneInfo("US/Pacific")
-        pacific_expected = datetime(2023, 5, 15, 16, 0, 0, tzinfo=pacific)
+        pacific_expected = datetime(2023, 5, 15, 17, 0, 0, tzinfo=pacific)
         pacific_result = get_next_standardized_reset_time("2h", base_time, "US/Pacific")
         self.assertEqual(pacific_result, pacific_expected)
 
@@ -493,10 +493,10 @@ class TestGetBudgetWindowStart(unittest.TestCase):
     ("duration", "zone", "current_time", "expected"),
     (
         ("48h", "UTC", "2024-01-30T00:00:00+00:00", "2024-02-01T00:00:00+00:00"),
-        ("2400h", "UTC", "2024-01-30T00:00:00+00:00", "2024-05-09T00:00:00+00:00"),
-        ("49h", "UTC", "2024-01-30T14:15:30+00:00", "2024-02-01T01:00:00+00:00"),
-        ("2885m", "UTC", "2024-01-30T14:15:30+00:00", "2024-02-01T14:05:00+00:00"),
-        ("172805s", "Asia/Kolkata", "2024-01-30T08:45:30+00:00", "2024-02-01T08:45:05+00:00"),
+        ("2400h", "UTC", "1970-01-01T00:00:00+00:00", "1970-04-11T00:00:00+00:00"),
+        ("49h", "UTC", "1970-01-01T14:15:30+00:00", "1970-01-03T01:00:00+00:00"),
+        ("2885m", "UTC", "1970-01-01T14:15:30+00:00", "1970-01-03T00:05:00+00:00"),
+        ("172805s", "Asia/Kolkata", "1970-01-01T08:45:30+00:00", "1970-01-03T00:00:05+00:00"),
     ),
 )
 def test_reset_rollover_keeps_all_elapsed_days(duration: str, zone: str, current_time: str, expected: str) -> None:
@@ -652,3 +652,30 @@ def test_scheduled_elapsed_window_contains_now_through_both_dst_transitions(dura
 
     assert start.astimezone(timezone.utc) <= instant < end.astimezone(timezone.utc)
     assert end.astimezone(timezone.utc) - start.astimezone(timezone.utc) == timedelta(hours=1)
+
+
+@pytest.mark.parametrize("duration", ("24h", "daily", "5h", "90m", "45s"))
+@pytest.mark.parametrize(
+    "now,zone",
+    (
+        ("2026-11-01T05:59:40Z", "America/New_York"),
+        ("2026-03-08T06:59:40Z", "America/New_York"),
+        ("2026-04-04T14:59:40Z", "Australia/Lord_Howe"),
+        ("2026-10-03T15:29:40Z", "Australia/Lord_Howe"),
+    ),
+)
+@pytest.mark.parametrize("saved_schedule", (False, True))
+def test_elapsed_schedule_never_shortens_a_later_allowance(
+    duration: str, now: str, zone: str, saved_schedule: bool
+) -> None:
+    current = datetime.fromisoformat(now)
+    anchor: Final = datetime(2026, 1, 1, 4, 17, tzinfo=timezone.utc) if saved_schedule else None
+    interval: Final = timedelta(seconds=duration_in_seconds(duration))
+    boundary = get_next_standardized_reset_time(duration, current, zone, elapsed_anchor=anchor).astimezone(timezone.utc)
+    assert boundary - interval <= current < boundary
+    for _ in range(6):
+        following: Final = get_next_standardized_reset_time(
+            duration, boundary, zone, elapsed_anchor=boundary if saved_schedule else None
+        ).astimezone(timezone.utc)
+        assert following - boundary == interval
+        boundary = following
