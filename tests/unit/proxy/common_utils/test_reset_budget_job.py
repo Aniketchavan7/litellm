@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from typing import Any, Dict, Final, List, Optional, TypeVar, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 import prisma
@@ -35,6 +36,62 @@ from litellm.redis.stores.spend_counters import user_window_counter
 from litellm.repositories.budget_repository import BudgetRepository
 from tests.unit.proxy.db.fake_prisma_engine import engine_call
 from tests.unit.redis.stores.spend_counters_double import FakeSpendCounters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("30d", 12, 1)))
+async def test_scalar_and_window_resets_do_not_reopen_the_fall_back_allowance(
+    duration: str, end_month: int, end_day: int
+) -> None:
+    zone: Final = ZoneInfo("America/New_York")
+    now: Final = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1).astimezone(timezone.utc)
+    first_reset: Final = datetime(2026, 11, 1, 1, 30, tzinfo=zone).astimezone(timezone.utc)
+    expected: Final = datetime(2026, end_month, end_day, 1, 30, tzinfo=zone).astimezone(timezone.utc)
+    settings: Final = BudgetResetSettings(timezone=zone.key, reset_time_of_day=dt_time(1, 30))
+    key: Final = LiteLLM_VerificationToken(
+        token="dst-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=first_reset
+    )
+    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": first_reset.isoformat()}
+    store: Final = FakeSpendCounters().store()
+    counter: Final = f"spend:key:dst-key:window:{duration}"
+    await store.set(counter, 10.0)
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+
+    scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, now, settings)
+    changed: Final = await ResetBudgetJob._reset_expired_window(
+        window, counter, store, now, settings, client, reset_budget_job_module.Litellm_EntityType.KEY, "dst-key"
+    )
+
+    assert scalar is not None and scalar.spend == 0.0
+    assert scalar.budget_reset_at == expected
+    assert changed and datetime.fromisoformat(window["reset_at"]) == expected
+    assert get_budget_window_start(window, settings) == first_reset
+    await store.set(counter, 10.0)
+    repeated: Final = await ResetBudgetJob._reset_expired_window(
+        window, counter, store, now.replace(minute=30), settings, client,
+        reset_budget_job_module.Litellm_EntityType.KEY, "dst-key"
+    )
+    assert repeated is False
+    assert (await store.read(counter))[0] == 10.0
+
+
+@pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("12mo", 1, 1)))
+def test_budget_table_window_uses_the_sweep_clock(duration: str, end_month: int, end_day: int) -> None:
+    zone: Final = ZoneInfo("America/New_York")
+    now: Final = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1).astimezone(timezone.utc)
+    expected: Final = datetime(
+        2027 if duration == "12mo" else 2026, end_month, end_day, 1, 30, tzinfo=zone
+    ).astimezone(timezone.utc)
+
+    result: Final = ResetBudgetJob._next_window_reset(
+        {"budget_duration": duration, "reset_at": "2026-11-01T05:30:00Z"},
+        now,
+        BudgetResetSettings(timezone=zone.key, reset_time_of_day=dt_time(1, 30)),
+    )
+
+    assert result == expected
 
 
 @pytest.mark.asyncio
@@ -1277,9 +1334,7 @@ def _run_reset_at_fixed_now(job, fixed_now):
     """Run the budget-table reset with `now` pinned for reset-time math."""
     from unittest.mock import patch
 
-    with patch("litellm.proxy.common_utils.timezone_utils.datetime") as mock_dt:
-        mock_dt.now.return_value = fixed_now
-        mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+    with patch(f"{__name__}._FROZEN_NOW", fixed_now):
         asyncio.run(job.reset_budget_for_litellm_budget_table())
 
 

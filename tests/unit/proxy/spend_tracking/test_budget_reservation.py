@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from types import SimpleNamespace
 from typing import Final
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from fastapi import Request
 
 import litellm
 from litellm.caching import DualCache
-from litellm.models.budget import LiteLLM_BudgetTable
+from litellm.models.budget import BudgetLimit, LiteLLM_BudgetTable
 from litellm.proxy import proxy_server
 from litellm.proxy._types import (
     LiteLLM_TeamMembership,
@@ -24,10 +25,12 @@ from litellm.proxy.common_utils.user_api_key_cache import (
     UserApiKeyCache,
     team_membership_reservation_cache_key,
 )
+from litellm.proxy.common_utils.timezone_utils import BudgetResetSettings
 from litellm.proxy.spend_tracking.budget_reservation import (
     _get_budget_counters,
     _get_team_member_budget_counter,
     count_request_input_tokens,
+    customer_window_counters,
     estimate_request_input_cost,
     estimate_request_max_cost,
     get_budget_window_start,
@@ -573,6 +576,27 @@ async def test_team_member_reservation_counter_adds_temp_increase_to_live_team_d
 )
 def test_budget_window_start_reads_json_encoded_windows(window: str, expected: datetime | None) -> None:
     assert get_budget_window_start(window) == expected
+
+
+@pytest.mark.parametrize(
+    "reset_at,now,expected",
+    (
+        ("2026-12-01T06:30:00Z", "2026-11-01T06:15:00Z", "2026-11-01T05:30:00Z"),
+        ("2026-03-01T06:30:00Z", "2026-02-15T12:00:00Z", "2026-02-01T06:30:00Z"),
+    ),
+)
+def test_customer_and_inline_monthly_windows_count_the_same_calendar_period(
+    reset_at: str, now: str, expected: str
+) -> None:
+    settings: Final = BudgetResetSettings(timezone="America/New_York", reset_time_of_day=dt_time(1, 30))
+    limit: Final = BudgetLimit(budget_duration="1mo", max_budget=10.0, reset_at=datetime.fromisoformat(reset_at))
+    counters: Final = customer_window_counters(
+        "customer_team", "dst-team", (limit,), now=datetime.fromisoformat(now), reset_settings=settings
+    )
+
+    assert counters[0].window_start == datetime.fromisoformat(expected)
+    assert get_budget_window_start(limit.model_dump(), settings) == counters[0].window_start
+    assert counters[0].reset_at == datetime.fromisoformat(reset_at)
 
 
 @pytest.mark.parametrize("today", ["2028-03-01", "2029-03-01"])

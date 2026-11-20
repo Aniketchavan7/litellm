@@ -4,7 +4,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from itertools import chain
 from operator import attrgetter
@@ -33,9 +33,7 @@ from litellm.constants import (
     RESET_BUDGET_JOB_NAME,
 )
 from litellm.litellm_core_utils.duration_parser import (
-    duration_in_seconds,
-    get_annual_budget_window_start,
-    is_annual_budget_duration,
+    get_budget_window_start,
     normalize_budget_window_start,
 )
 from litellm.proxy._types import (
@@ -1114,7 +1112,7 @@ class ResetBudgetJob:
             budget_resets=tuple(
                 (
                     b.budget_id,
-                    compute_budget_reset_at(budget_duration=b.budget_duration, settings=self.reset_settings),
+                    compute_budget_reset_at(budget_duration=b.budget_duration, settings=self.reset_settings, now=now),
                 )
                 for b in budgets_to_reset
                 if b.budget_id is not None and b.budget_id in windows and b.budget_duration is not None
@@ -1920,13 +1918,10 @@ class ResetBudgetJob:
         budget_duration: Final = window.get("budget_duration")
         if not isinstance(reset_at_str, str) or not reset_at_str or not isinstance(budget_duration, str):
             return None
-        annual: Final = is_annual_budget_duration(budget_duration)
         saved_reset_at: Final = datetime.fromisoformat(reset_at_str.replace("Z", "+00:00"))
         if _as_utc(saved_reset_at) > _as_utc(now):
             return None
-        return compute_budget_reset_at(
-            budget_duration=budget_duration, settings=reset_settings, now=now if annual else None
-        )
+        return compute_budget_reset_at(budget_duration=budget_duration, settings=reset_settings, now=now)
 
     @staticmethod
     async def _roll_window_spend_row(
@@ -1946,12 +1941,11 @@ class ResetBudgetJob:
         windows from having their counters reset.
         """
         try:
-            window_start: Final = (
-                get_annual_budget_window_start(next_reset_at, (reset_settings or get_budget_reset_settings()).timezone)
-                if is_annual_budget_duration(budget_duration)
-                else next_reset_at - timedelta(seconds=duration_in_seconds(budget_duration))
+            settings: Final = reset_settings or get_budget_reset_settings()
+            window_start: Final = get_budget_window_start(
+                budget_duration, next_reset_at, settings.timezone, settings.reset_time_of_day
             )
-        except Exception as e:  # noqa: BLE001  # duration_in_seconds raises bare exceptions on bad input
+        except (ValueError, OverflowError) as e:
             verbose_proxy_logger.warning("Unparseable budget_duration %s: %s", budget_duration, e)
             return
         try:
@@ -2131,7 +2125,7 @@ class ResetBudgetJob:
                 item.budget_reset_at = compute_budget_reset_at(
                     budget_duration=item.budget_duration,
                     settings=reset_settings,
-                    now=current_time if is_annual_budget_duration(item.budget_duration) else None,
+                    now=current_time,
                 )
             return item
         except Exception as e:
