@@ -520,6 +520,26 @@ def _capture_update_data(mock_table):
     return captured
 
 
+@pytest.mark.parametrize("duration", ("24h", "30d"))
+@pytest.mark.parametrize("year", (2020, 2099))
+def test_shared_budget_cap_edit_keeps_the_saved_schedule(
+    client_and_mocks: tuple[TestClient, MagicMock, MagicMock], duration: str, year: int
+) -> None:
+    client, _, table = client_and_mocks
+    table.find_unique = AsyncMock(return_value=types.SimpleNamespace(
+        budget_duration=duration, budget_reset_at=datetime(year, 7, 16, 4, tzinfo=timezone.utc),
+    ))
+    written: Final = _capture_update_data(table)
+
+    response: Final = client.post(
+        "/budget/update", json={"budget_id": "saved-schedule", "max_budget": 20, "budget_duration": duration}
+    )
+
+    assert response.status_code == 200
+    assert written["max_budget"] == 20
+    assert "budget_reset_at" not in written
+
+
 @pytest.mark.asyncio
 async def test_update_budget_recomputes_reset_at_when_duration_changes(
     client_and_mocks,

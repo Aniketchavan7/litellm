@@ -140,7 +140,7 @@ from litellm.proxy.common_utils.openai_error_payload import proxy_exception_for
 from litellm.proxy.common_utils.timezone_utils import (
     get_budget_reset_time,
     get_budget_window_reset_fields,
-    keeps_due_budget_reset,
+    keeps_budget_reset,
 )
 from litellm.proxy.common_utils.user_api_key_cache import (
     UserApiKeyCache,
@@ -3139,7 +3139,7 @@ async def patch_team(
 
 def _set_budget_reset_at(data: UpdateTeamRequest, updated_kv: dict, existing_team: LiteLLM_TeamTable) -> None:
     """Set budget_reset_at in updated_kv if budget_duration is provided."""
-    if data.budget_duration is not None and not keeps_due_budget_reset(
+    if data.budget_duration is not None and not keeps_budget_reset(
         data.budget_duration, existing_team.budget_duration, existing_team.budget_reset_at
     ):
         updated_kv["budget_reset_at"] = get_budget_reset_time(budget_duration=data.budget_duration)

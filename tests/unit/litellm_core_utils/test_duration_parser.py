@@ -668,14 +668,16 @@ def test_scheduled_elapsed_window_contains_now_through_both_dst_transitions(dura
 def test_elapsed_schedule_never_shortens_a_later_allowance(
     duration: str, now: str, zone: str, saved_schedule: bool
 ) -> None:
-    current = datetime.fromisoformat(now)
+    current: Final = datetime.fromisoformat(now)
     anchor: Final = datetime(2026, 1, 1, 4, 17, tzinfo=timezone.utc) if saved_schedule else None
     interval: Final = timedelta(seconds=duration_in_seconds(duration))
-    boundary = get_next_standardized_reset_time(duration, current, zone, elapsed_anchor=anchor).astimezone(timezone.utc)
-    assert boundary - interval <= current < boundary
-    for _ in range(6):
+    first: Final = get_next_standardized_reset_time(
+        duration, current, zone, elapsed_anchor=anchor
+    ).astimezone(timezone.utc)
+    assert first - interval <= current < first
+    for offset in range(6):
+        boundary: Final = first + offset * interval
         following: Final = get_next_standardized_reset_time(
             duration, boundary, zone, elapsed_anchor=boundary if saved_schedule else None
         ).astimezone(timezone.utc)
         assert following - boundary == interval
-        boundary = following

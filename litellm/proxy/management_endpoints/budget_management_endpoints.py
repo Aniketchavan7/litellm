@@ -34,6 +34,7 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.timezone_utils import (
     get_budget_reset_settings,
     get_budget_reset_time,
+    keeps_budget_reset,
 )
 from litellm.proxy.management_endpoints.common_utils import (  # noqa: F401  # legacy module exports
     _user_has_admin_view,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
@@ -218,10 +219,21 @@ async def update_budget(
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": str(e)})
 
-    # recompute budget_reset_at when the duration changes, unless the caller pinned a reset time explicitly
+    stored: Final = (
+        await BudgetRepository(prisma_client).table.find_unique(where={"budget_id": budget_obj.budget_id})
+        if (budget_obj.budget_duration is not None and "budget_reset_at" not in budget_obj.model_fields_set)
+        or (isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits)
+        else None
+    )
     recomputed_reset_at: Final = (
         {"budget_reset_at": get_budget_reset_time(budget_duration=budget_obj.budget_duration)}
-        if budget_obj.budget_duration is not None and "budget_reset_at" not in budget_obj.model_fields_set
+        if budget_obj.budget_duration is not None
+        and "budget_reset_at" not in budget_obj.model_fields_set
+        and not keeps_budget_reset(
+            budget_obj.budget_duration,
+            stored.budget_duration if stored is not None else None,
+            stored.budget_reset_at if stored is not None else None,
+        )
         else MappingProxyType({"budget_reset_at": None})
         if "budget_duration" in budget_obj.model_fields_set
         and budget_obj.budget_duration is None
@@ -239,11 +251,6 @@ async def update_budget(
         )
     )
 
-    stored: Final = (
-        await BudgetRepository(prisma_client).table.find_unique(where={"budget_id": budget_obj.budget_id})
-        if isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits
-        else None
-    )
     window_data: Final = (
         {
             "budget_limits": budget_limit_json(

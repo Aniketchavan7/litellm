@@ -2186,12 +2186,12 @@ async def test_update_key_end_user_budget_id_folds_into_metadata_and_survives_om
     [
         ("30d", datetime(2020, 1, 1, tzinfo=timezone.utc), False),
         ("30d", datetime(2020, 1, 1), False),
-        ("30d", datetime(2099, 1, 1, tzinfo=timezone.utc), True),
+        ("30d", datetime(2099, 1, 1, tzinfo=timezone.utc), False),
         ("7d", datetime(2020, 1, 1, tzinfo=timezone.utc), True),
         ("30d", None, True),
     ],
 )
-async def test_update_key_keeps_a_due_budget_reset_when_the_duration_is_resent(
+async def test_update_key_keeps_existing_budget_reset_when_the_duration_is_resent(
     stored_duration: str, stored_reset_at: datetime | None, moves_reset: bool
 ) -> None:
     existing_key: Final = LiteLLM_VerificationToken(
@@ -2206,6 +2206,20 @@ async def test_update_key_keeps_a_due_budget_reset_when_the_duration_is_resent(
     reset_at: Final = updated.get("budget_reset_at")
     assert (isinstance(reset_at, datetime) and reset_at > datetime.now(timezone.utc)) is moves_reset
     assert ("budget_reset_at" in updated) is moves_reset
+
+
+@pytest.mark.asyncio
+async def test_key_cap_edit_retains_an_existing_elapsed_schedule() -> None:
+    existing: Final = LiteLLM_VerificationToken(
+        token="hashed", max_budget=10, budget_duration="24h",
+        budget_reset_at=datetime(2099, 7, 16, 4, tzinfo=timezone.utc),
+    )
+    updated: Final = await prepare_key_update_data(
+        data=UpdateKeyRequest(key="sk-1", max_budget=20, budget_duration="24h"), existing_key_row=existing
+    )
+
+    assert updated["max_budget"] == 20
+    assert "budget_reset_at" not in updated
 
 
 @pytest.mark.asyncio

@@ -99,7 +99,7 @@ from litellm.proxy.common_utils.rbac_utils import check_org_admin_can_generate_k
 from litellm.proxy.common_utils.timezone_utils import (
     get_budget_reset_time,
     get_budget_window_reset_fields,
-    keeps_due_budget_reset,
+    keeps_budget_reset,
 )
 from litellm.proxy.common_utils.user_api_key_cache import AUTH_OBJECTS_TARGET, UserApiKeyCache, is_user_key_cache_key
 from litellm.proxy.guardrails.guardrail_helpers import validate_guardrail_names
@@ -3187,7 +3187,7 @@ async def prepare_key_update_data(
             non_default_values["budget_reset_at"] = None
         elif isinstance(budget_duration, str) and len(budget_duration) > 0:
             non_default_values["budget_duration"] = budget_duration
-            if not keeps_due_budget_reset(
+            if not keeps_budget_reset(
                 budget_duration, existing_key_row.budget_duration, existing_key_row.budget_reset_at
             ):
                 non_default_values["budget_reset_at"] = get_budget_reset_time(budget_duration=budget_duration)

@@ -115,15 +115,16 @@ async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_ho
 @pytest.mark.parametrize("duration", ("24h", "daily"))
 async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(duration: str) -> None:
     settings: Final = BudgetResetSettings(timezone="America/New_York")
-    boundary = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
+    first: Final = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
     key: Final = LiteLLM_VerificationToken(
-        token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=boundary,
+        token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=first,
     )
-    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": boundary.isoformat()}
+    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": first.isoformat()}
     client: Final = MagicMock(spec=PrismaClient)
     client.db = MagicMock()
     client.db.execute_raw = AsyncMock(return_value=1)
-    for _ in range(4):
+    for offset in range(4):
+        boundary: Final = first + timedelta(days=offset)
         expected: Final = boundary + timedelta(hours=24)
         scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, boundary, settings)
         changed: Final = await ResetBudgetJob._reset_expired_window(
@@ -134,7 +135,6 @@ async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(
         assert scalar.budget_reset_at.astimezone(timezone.utc) == expected
         assert changed and datetime.fromisoformat(window["reset_at"]) == expected
         assert get_budget_window_start(window, settings) == boundary
-        boundary = expected
 
 
 @pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("12mo", 1, 1)))
@@ -4356,12 +4356,17 @@ class _EndUserLedger:
         self.advances = 0
         self.stale_due_budgets: list[types.SimpleNamespace] | None = None
         replica: Final = [types.SimpleNamespace(**vars(budget)) for budget in self.budgets.values()]
+
+        async def find_stored_budget(*, where: Mapping[str, str]) -> types.SimpleNamespace | None:
+            return next((budget for budget in replica if budget.budget_id == where["budget_id"]), None)
+
         self.client = types.SimpleNamespace(
             writer_db=types.SimpleNamespace(
                 litellm_budgettable=types.SimpleNamespace(find_many=self._find_budgets),
             ),
             db=types.SimpleNamespace(
                 litellm_budgettable=types.SimpleNamespace(
+                    find_unique=find_stored_budget,
                     find_many=lambda where: _async_value(
                         [budget for budget in replica if _row_matches(vars(budget), where)]
                     ),

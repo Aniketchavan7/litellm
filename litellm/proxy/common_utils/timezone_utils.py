@@ -108,13 +108,8 @@ def get_budget_window_reset_fields(
     )
 
 
-def keeps_due_budget_reset(
-    requested_duration: str, stored_duration: str | None, stored_reset_at: datetime | None
-) -> bool:
-    if stored_reset_at is None or requested_duration != stored_duration:
-        return False
-    stored_utc: Final = stored_reset_at if stored_reset_at.tzinfo else stored_reset_at.replace(tzinfo=timezone.utc)
-    return stored_utc <= datetime.now(timezone.utc)
+def keeps_budget_reset(requested_duration: str, stored_duration: str | None, stored_reset_at: datetime | None) -> bool:
+    return stored_reset_at is not None and requested_duration == stored_duration
 
 
 def _is_persistable_budget_duration(budget_duration: str) -> bool:
