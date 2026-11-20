@@ -6408,3 +6408,34 @@ async def test_scheduled_rollover_never_reopens_a_manually_cleared_period(
     assert get_budget_window_start(changed) == datetime.fromisoformat(end)
     assert datetime.fromisoformat(str(changed["reset_at"])) == datetime.fromisoformat(next_end)
     assert (await store.read(counter))[0] == 0.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "duration,saved,expected",
+    (
+        ("45m", "2026-07-15T11:30:00Z", "2026-07-15T12:15:00Z"),
+        ("5h", "2026-07-16T01:00:00Z", "2026-07-16T06:00:00Z"),
+        ("45s", "2026-07-15T10:18:30Z", "2026-07-15T10:19:15Z"),
+    ),
+)
+async def test_scalar_and_inline_elapsed_resets_keep_a_full_interval(
+    duration: str, saved: str, expected: str
+) -> None:
+    boundary: Final = datetime.fromisoformat(saved)
+    now: Final = boundary + timedelta(seconds=1)
+    settings: Final = BudgetResetSettings()
+    key: Final = LiteLLM_VerificationToken(
+        token="interval-key", spend=10, max_budget=10, budget_duration=duration, budget_reset_at=boundary
+    )
+
+    scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, now, settings)
+    inline: Final = ResetBudgetJob._next_window_reset(
+        {"budget_duration": duration, "reset_at": saved}, now, settings
+    )
+
+    assert scalar is not None
+    assert scalar.spend == 0
+    assert scalar.budget_reset_at == datetime.fromisoformat(expected)
+    assert inline == scalar.budget_reset_at
+

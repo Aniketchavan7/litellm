@@ -74,7 +74,9 @@ def _rebase_window(
         return window
     if after.reset_at is None or (before.reset_at == after.reset_at and before.window_start == after.window_start):
         return window
-    if before.model_dump(exclude={"reset_at", "window_start"}) != after.model_dump(exclude={"reset_at", "window_start"}):
+    if before.model_dump(exclude={"reset_at", "window_start"}) != after.model_dump(
+        exclude={"reset_at", "window_start"}
+    ):
         return window
     return {
         **{key: value for key, value in window.items() if key not in ("reset_at", "window_start")},
