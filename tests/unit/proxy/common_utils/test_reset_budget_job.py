@@ -40,17 +40,6 @@ from tests.unit.proxy.db.fake_prisma_engine import engine_call
 from tests.unit.redis.stores.spend_counters_double import FakeSpendCounters
 
 
-async def _reset_inline_window(
-    window: Mapping[str, object], row_id: str, store: SpendCounterStore, now: datetime, settings: BudgetResetSettings
-) -> Mapping[str, object]:
-    client: Final = _window_prisma_client()
-    job: Final = ResetBudgetJob(proxy_logging_obj=MagicMock(), prisma_client=client, reset_settings=settings)
-    source: Final = next(source for source in _WINDOW_SOURCES if source.table == "LiteLLM_VerificationToken")
-    await job._reset_window_row(source, row_id, (window,), now, store)
-    writes: Final = _window_cas_writes(client)
-    return TypeAdapter(tuple[dict[str, object], ...]).validate_json(writes[0][3])[0] if writes else window
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("30d", 12, 1)))
 async def test_scalar_and_window_resets_do_not_reopen_the_fall_back_allowance(
@@ -83,60 +72,6 @@ async def test_scalar_and_window_resets_do_not_reopen_the_fall_back_allowance(
     repeated: Final = await _reset_inline_window(changed, "dst-key", store, now.replace(minute=30), settings)
     assert repeated == changed
     assert (await store.read(counter))[0] == 10.0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "now,previous_reset,expected",
-    (
-        ("2026-11-01T05:15:00Z", "2026-11-01T05:00:00Z", "2026-11-01T06:00:00Z"),
-        ("2026-11-01T06:15:00Z", "2026-11-01T06:00:00Z", "2026-11-01T07:00:00Z"),
-    ),
-)
-async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_hour(
-    now: str, previous_reset: str, expected: str
-) -> None:
-    instant: Final = datetime.fromisoformat(now)
-    settings: Final = BudgetResetSettings(timezone="America/New_York")
-    key: Final = LiteLLM_VerificationToken(
-        token="hourly-key", spend=10.0, max_budget=10.0, budget_duration="1h",
-        budget_reset_at=datetime.fromisoformat(previous_reset),
-    )
-    window: Final = {"budget_duration": "1h", "max_budget": 10.0, "reset_at": previous_reset}
-    client: Final = MagicMock(spec=PrismaClient)
-    client.db = MagicMock()
-    client.db.execute_raw = AsyncMock(return_value=1)
-
-    scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, instant, settings)
-    changed: Final = await _reset_inline_window(window, "hourly-key", FakeSpendCounters().store(), instant, settings)
-
-    assert scalar is not None and scalar.budget_reset_at is not None
-    assert scalar.budget_reset_at.astimezone(timezone.utc) == datetime.fromisoformat(expected)
-    assert datetime.fromisoformat(str(changed["reset_at"])) == scalar.budget_reset_at.astimezone(timezone.utc)
-    assert get_budget_window_start(changed, settings) == datetime.fromisoformat(previous_reset)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("duration", ("24h", "daily"))
-async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(duration: str) -> None:
-    settings: Final = BudgetResetSettings(timezone="America/New_York")
-    first: Final = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
-    key: Final = LiteLLM_VerificationToken(
-        token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=first,
-    )
-    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": first.isoformat()}
-    client: Final = MagicMock(spec=PrismaClient)
-    client.db = MagicMock()
-    client.db.execute_raw = AsyncMock(return_value=1)
-    for offset in range(4):
-        boundary: Final = first + timedelta(days=offset)
-        expected: Final = boundary + timedelta(hours=24)
-        scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, boundary, settings)
-        changed: Final = await _reset_inline_window(window, "daily-key", FakeSpendCounters().store(), boundary, settings)
-        assert scalar is not None and scalar.budget_reset_at is not None
-        assert scalar.budget_reset_at.astimezone(timezone.utc) == expected
-        assert datetime.fromisoformat(str(changed["reset_at"])) == expected
-        assert get_budget_window_start(changed, settings) == boundary
 
 
 @pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("12mo", 1, 1)))
@@ -6439,3 +6374,67 @@ async def test_scalar_and_inline_elapsed_resets_keep_a_full_interval(
     assert scalar.budget_reset_at == datetime.fromisoformat(expected)
     assert inline == scalar.budget_reset_at
 
+
+async def _reset_inline_window(
+    window: Mapping[str, object], row_id: str, store: SpendCounterStore, now: datetime, settings: BudgetResetSettings
+) -> Mapping[str, object]:
+    client: Final = _window_prisma_client()
+    job: Final = ResetBudgetJob(proxy_logging_obj=MagicMock(), prisma_client=client, reset_settings=settings)
+    source: Final = next(source for source in _WINDOW_SOURCES if source.table == "LiteLLM_VerificationToken")
+    await job._reset_window_row(source, row_id, (window,), now, store)
+    writes: Final = _window_cas_writes(client)
+    return TypeAdapter(tuple[dict[str, object], ...]).validate_json(writes[0][3])[0] if writes else window
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "now,previous_reset,expected",
+    (
+        ("2026-11-01T05:15:00Z", "2026-11-01T05:00:00Z", "2026-11-01T06:00:00Z"),
+        ("2026-11-01T06:15:00Z", "2026-11-01T06:00:00Z", "2026-11-01T07:00:00Z"),
+    ),
+)
+async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_hour(
+    now: str, previous_reset: str, expected: str
+) -> None:
+    instant: Final = datetime.fromisoformat(now)
+    settings: Final = BudgetResetSettings(timezone="America/New_York")
+    key: Final = LiteLLM_VerificationToken(
+        token="hourly-key", spend=10.0, max_budget=10.0, budget_duration="1h",
+        budget_reset_at=datetime.fromisoformat(previous_reset),
+    )
+    window: Final = {"budget_duration": "1h", "max_budget": 10.0, "reset_at": previous_reset}
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+
+    scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, instant, settings)
+    changed: Final = await _reset_inline_window(window, "hourly-key", FakeSpendCounters().store(), instant, settings)
+
+    assert scalar is not None and scalar.budget_reset_at is not None
+    assert scalar.budget_reset_at.astimezone(timezone.utc) == datetime.fromisoformat(expected)
+    assert datetime.fromisoformat(str(changed["reset_at"])) == scalar.budget_reset_at.astimezone(timezone.utc)
+    assert get_budget_window_start(changed, settings) == datetime.fromisoformat(previous_reset)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", ("24h", "daily"))
+async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(duration: str) -> None:
+    settings: Final = BudgetResetSettings(timezone="America/New_York")
+    first: Final = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
+    key: Final = LiteLLM_VerificationToken(
+        token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=first,
+    )
+    window: Final = {"budget_duration": duration, "max_budget": 10.0, "reset_at": first.isoformat()}
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+    for offset in range(4):
+        boundary: Final = first + timedelta(days=offset)
+        expected: Final = boundary + timedelta(hours=24)
+        scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, boundary, settings)
+        changed: Final = await _reset_inline_window(window, "daily-key", FakeSpendCounters().store(), boundary, settings)
+        assert scalar is not None and scalar.budget_reset_at is not None
+        assert scalar.budget_reset_at.astimezone(timezone.utc) == expected
+        assert datetime.fromisoformat(str(changed["reset_at"])) == expected
+        assert get_budget_window_start(changed, settings) == boundary
