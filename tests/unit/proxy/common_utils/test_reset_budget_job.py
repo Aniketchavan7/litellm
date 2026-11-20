@@ -114,9 +114,10 @@ async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_ho
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration", ("24h", "daily"))
-async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(duration: str) -> None:
+async def test_existing_daily_budgets_stay_on_local_midnight_after_fall_back(duration: str) -> None:
     settings: Final = BudgetResetSettings(timezone="America/New_York")
-    first: Final = datetime(2026, 11, 1, 4, tzinfo=timezone.utc)
+    zone: Final = ZoneInfo("America/New_York")
+    first: Final = datetime(2026, 11, 1, tzinfo=zone).astimezone(timezone.utc)
     key: Final = LiteLLM_VerificationToken(
         token="daily-key", spend=10.0, max_budget=10.0, budget_duration=duration, budget_reset_at=first,
     )
@@ -125,8 +126,8 @@ async def test_existing_daily_elapsed_budgets_keep_their_anchor_after_fall_back(
     client.db = MagicMock()
     client.db.execute_raw = AsyncMock(return_value=1)
     for offset in range(4):
-        boundary: Final = first + timedelta(days=offset)
-        expected: Final = boundary + timedelta(hours=24)
+        boundary: Final = datetime(2026, 11, 1 + offset, tzinfo=zone).astimezone(timezone.utc)
+        expected: Final = datetime(2026, 11, 2 + offset, tzinfo=zone).astimezone(timezone.utc)
         scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, boundary, settings)
         changed: Final = await ResetBudgetJob._reset_expired_window(
             window, "spend:key:daily-key:window:" + duration, FakeSpendCounters().store(), boundary, settings,
