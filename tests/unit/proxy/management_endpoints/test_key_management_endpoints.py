@@ -2675,14 +2675,14 @@ async def test_prepare_key_update_data_keeps_a_resubmitted_window_mid_period(wee
 
 
 @pytest.mark.asyncio
-async def test_prepare_key_update_data_restarts_a_resubmitted_window_whose_period_ended() -> None:
-    stale_reset_at: Final = datetime.now(timezone.utc) - timedelta(days=1)
+async def test_prepare_key_update_data_leaves_due_windows_for_the_reset_job() -> None:
+    stale_reset_at: Final = datetime(2024, 7, 15, tzinfo=timezone.utc)
 
     windows: Final = await _updated_windows_by_duration(
         _key_with_weekly_window(stale_reset_at), [{"budget_duration": "7d", "max_budget": 50.0}]
     )
 
-    assert datetime.fromisoformat(windows["7d"]["reset_at"]) > datetime.now(timezone.utc)
+    assert datetime.fromisoformat(windows["7d"]["reset_at"]) == stale_reset_at
 
 
 @pytest.mark.asyncio
@@ -25175,11 +25175,12 @@ def test_manual_reset_keeps_its_exact_start_after_serialization(duration: str, n
     assert get_budget_window_start(stored, BudgetResetSettings(timezone="Asia/Kolkata")) == start
 
 
-def test_editing_a_manually_reset_key_keeps_the_server_start() -> None:
+@pytest.mark.parametrize("year", (2024, 2099))
+def test_editing_a_manually_reset_key_keeps_the_server_start(year: int) -> None:
     from litellm.models.team import BudgetLimitEntry
     from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
 
-    start: Final = datetime(2099, 7, 15, 12, tzinfo=timezone.utc)
+    start: Final = datetime(year, 7, 15, 12, tzinfo=timezone.utc)
     stored: Final = BudgetLimitEntry.model_validate(
         _advance_one_key_budget_window({"budget_duration": "30d", "max_budget": 1.0}, start)
     )

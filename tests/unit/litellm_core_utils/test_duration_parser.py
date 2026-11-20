@@ -101,9 +101,8 @@ class TestStandardizedResetTime(unittest.TestCase):
         self.assertEqual(ist_result, ist_expected)
 
         # Test hourly reset in different timezones
-        # Elapsed schedules align in UTC: next even UTC hour is 00:00 (5 PM Pacific).
         pacific = ZoneInfo("US/Pacific")
-        pacific_expected = datetime(2023, 5, 15, 17, 0, 0, tzinfo=pacific)
+        pacific_expected = datetime(2023, 5, 15, 16, 0, 0, tzinfo=pacific)
         pacific_result = get_next_standardized_reset_time("2h", base_time, "US/Pacific")
         self.assertEqual(pacific_result, pacific_expected)
 
@@ -493,10 +492,10 @@ class TestGetBudgetWindowStart(unittest.TestCase):
     ("duration", "zone", "current_time", "expected"),
     (
         ("48h", "UTC", "2024-01-30T00:00:00+00:00", "2024-02-01T00:00:00+00:00"),
-        ("2400h", "UTC", "1970-01-01T00:00:00+00:00", "1970-04-11T00:00:00+00:00"),
-        ("49h", "UTC", "1970-01-01T14:15:30+00:00", "1970-01-03T01:00:00+00:00"),
-        ("2885m", "UTC", "1970-01-01T14:15:30+00:00", "1970-01-03T00:05:00+00:00"),
-        ("172805s", "Asia/Kolkata", "1970-01-01T08:45:30+00:00", "1970-01-03T00:00:05+00:00"),
+        ("2400h", "UTC", "2024-01-30T00:00:00+00:00", "2024-05-09T00:00:00+00:00"),
+        ("49h", "UTC", "2024-01-30T14:15:30+00:00", "2024-02-01T01:00:00+00:00"),
+        ("2885m", "UTC", "2024-01-30T14:15:30+00:00", "2024-02-01T14:05:00+00:00"),
+        ("172805s", "Asia/Kolkata", "2024-01-30T08:45:30+00:00", "2024-02-01T08:45:05+00:00"),
     ),
 )
 def test_reset_rollover_keeps_all_elapsed_days(duration: str, zone: str, current_time: str, expected: str) -> None:
@@ -678,6 +677,42 @@ def test_elapsed_schedule_never_shortens_a_later_allowance(
     for offset in range(6):
         boundary: Final = first + offset * interval
         following: Final = get_next_standardized_reset_time(
-            duration, boundary, zone, elapsed_anchor=boundary if saved_schedule else None
+            duration, boundary, zone, elapsed_anchor=boundary
         ).astimezone(timezone.utc)
         assert following - boundary == interval
+
+
+@pytest.mark.parametrize(
+    "duration,zone,expected",
+    (
+        ("45m", "UTC", "2026-07-15T10:45:00Z"),
+        ("5h", "UTC", "2026-07-15T15:00:00Z"),
+        ("daily", "Asia/Tokyo", "2026-07-16T00:00:00+09:00"),
+        ("1h", "Asia/Kolkata", "2026-07-15T16:00:00+05:30"),
+        ("24h", "America/New_York", "2026-07-16T00:00:00-04:00"),
+        ("1d", "Asia/Tokyo", "2026-07-16T00:00:00+09:00"),
+        ("1mo", "UTC", "2026-08-01T00:00:00Z"),
+    ),
+)
+def test_new_schedules_keep_their_local_alignment(duration: str, zone: str, expected: str) -> None:
+    now: Final = datetime(2026, 7, 15, 10, 17, tzinfo=timezone.utc)
+
+    assert get_next_standardized_reset_time(duration, now, zone) == datetime.fromisoformat(expected)
+
+
+@pytest.mark.parametrize(
+    "duration,boundary,expected",
+    (
+        ("45m", "2026-07-15T11:30:00Z", "2026-07-15T12:15:00Z"),
+        ("5h", "2026-07-16T01:00:00Z", "2026-07-16T06:00:00Z"),
+        ("45s", "2026-07-15T10:18:30Z", "2026-07-15T10:19:15Z"),
+    ),
+)
+def test_saved_elapsed_schedules_do_not_shorten_at_local_unit_rollover(
+    duration: str, boundary: str, expected: str
+) -> None:
+    saved_reset: Final = datetime.fromisoformat(boundary)
+
+    assert get_next_standardized_reset_time(
+        duration, saved_reset, "UTC", elapsed_anchor=saved_reset
+    ) == datetime.fromisoformat(expected)

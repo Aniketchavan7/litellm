@@ -6949,9 +6949,8 @@ def _window_with_reset_at(
 ) -> Mapping[str, object]:
     """A resubmitted window keeps its running period, so editing one window never restarts the others."""
     duration: Final = str(window["budget_duration"])
-    now: Final = datetime.now(timezone.utc)
     stored: Final = next(
-        (w for w in stored_windows if w.budget_duration == duration and _is_open_reset_at(w.reset_at, now)),
+        (w for w in stored_windows if w.budget_duration == duration and w.reset_at is not None),
         None,
     )
     fields: Final = {key: value for key, value in window.items() if key not in ("window_start", "reset_at")}
@@ -6962,12 +6961,6 @@ def _window_with_reset_at(
         "reset_at": stored.reset_at.isoformat(),
         **({"window_start": stored.window_start.isoformat()} if stored.window_start is not None else {}),
     }
-
-
-def _is_open_reset_at(reset_at: datetime | None, now: datetime) -> bool:
-    if reset_at is None:
-        return False
-    return (reset_at if reset_at.tzinfo is not None else reset_at.replace(tzinfo=timezone.utc)) > now
 
 
 def _advance_one_key_budget_window(window: Mapping[str, object], now: datetime) -> Mapping[str, object]:

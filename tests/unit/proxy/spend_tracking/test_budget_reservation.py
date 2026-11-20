@@ -886,3 +886,43 @@ def test_expired_customer_elapsed_schedule_keeps_its_saved_anchor(days_after_res
 
     assert counter.window_start == start
     assert counter.reset_at == start + timedelta(hours=24)
+
+
+@pytest.mark.parametrize(
+    "duration,zone,expected",
+    (
+        ("daily", "Asia/Tokyo", "2026-07-16T00:00:00+09:00"),
+        ("1h", "Asia/Kolkata", "2026-07-15T16:00:00+05:30"),
+        ("45m", "UTC", "2026-07-15T10:45:00Z"),
+        ("5h", "UTC", "2026-07-15T15:00:00Z"),
+    ),
+)
+def test_created_customer_and_inline_windows_keep_the_same_schedule(
+    duration: str, zone: str, expected: str
+) -> None:
+    from litellm.litellm_core_utils.duration_parser import duration_in_seconds
+    from litellm.models.budget import initialize_budget_limits
+    from litellm.proxy.common_utils.timezone_utils import compute_budget_reset_at
+
+    now: Final = datetime(2026, 7, 15, 10, 17, tzinfo=timezone.utc)
+    settings: Final = BudgetResetSettings(timezone=zone)
+    limits: Final = initialize_budget_limits((BudgetLimit(budget_duration=duration, max_budget=10),), settings, now)
+    first: Final = datetime.fromisoformat(expected)
+    interval: Final = timedelta(seconds=duration_in_seconds(duration))
+
+    assert limits[0].reset_at == first
+    for period in range(3):
+        current: Final = first + period * interval
+        counter: Final = customer_window_counters(
+            "customer_team", "schedule-team", limits, now=current, reset_settings=settings
+        )[0]
+        next_reset: Final = compute_budget_reset_at(duration, settings, current, previous_reset=first)
+        inline: Final = {
+            "budget_duration": duration,
+            **get_budget_window_reset_fields(duration, reset_at=next_reset, settings=settings),
+        }
+
+        assert counter.window_start == current
+        assert counter.reset_at == current + interval
+        assert get_budget_window_start(inline, settings) == current
+        assert datetime.fromisoformat(inline["reset_at"]) == counter.reset_at

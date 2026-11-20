@@ -112,7 +112,7 @@ def get_next_standardized_reset_time(
 
     All durations will reset at predictable intervals, aligned from the current time:
     - Nd: If N=1, reset at the next `reset_time_of_day`; if N>1, reset every N days from now
-    - Nh/Nm/Ns: Fixed elapsed intervals, aligned from `elapsed_anchor` or the UTC epoch
+    - Nh/Nm/Ns: Fixed elapsed intervals, initially aligned to local day/hour/minute boundaries
 
     Parameters:
     - duration: Duration string (e.g. "30s", "30m", "30h", "30d")
@@ -122,7 +122,7 @@ def get_next_standardized_reset_time(
       durations (defaults to midnight). Ignored for sub-day durations, where a
       time-of-day is meaningless.
     - elapsed_anchor: Saved reset instant for an existing elapsed-time schedule.
-      New schedules use the UTC epoch, so stateless readers share the same windows.
+      Without one, retain the local alignment used when creating a budget.
 
     Returns:
     - Next reset time at a standardized interval in the specified timezone
@@ -149,11 +149,13 @@ def get_next_standardized_reset_time(
     elif unit == "w":
         return _handle_day_reset(current_time, base_midnight, value * 7, reset_time_of_day)
     elif unit == "h":
-        return _next_elapsed_reset(current_time, timedelta(hours=value), elapsed_anchor)
+        return _next_elapsed_reset(current_time, timedelta(hours=value), elapsed_anchor or base_midnight)
     elif unit == "m":
-        return _next_elapsed_reset(current_time, timedelta(minutes=value), elapsed_anchor)
+        hour_start: Final = current_time.replace(minute=0, second=0, microsecond=0)
+        return _next_elapsed_reset(current_time, timedelta(minutes=value), elapsed_anchor or hour_start)
     elif unit == "s":
-        return _next_elapsed_reset(current_time, timedelta(seconds=value), elapsed_anchor)
+        minute_start: Final = current_time.replace(second=0, microsecond=0)
+        return _next_elapsed_reset(current_time, timedelta(seconds=value), elapsed_anchor or minute_start)
     elif unit == "mo":
         return _handle_month_reset(current_time, base_midnight, value, reset_time_of_day)
     else:
@@ -343,13 +345,11 @@ def _handle_day_reset(
         return _apply_time_of_day(base_midnight + timedelta(days=value), reset_time_of_day)
 
 
-def _next_elapsed_reset(current_time: datetime, interval: timedelta, anchor: datetime | None = None) -> datetime:
+def _next_elapsed_reset(current_time: datetime, interval: timedelta, anchor: datetime) -> datetime:
     """Keep one UTC schedule across resets, including local hour/day changes."""
     if interval == timedelta(0):
         return current_time
-    utc_anchor: Final = (
-        _setup_timezone(anchor, "UTC")[0] if anchor is not None else datetime(1970, 1, 1, tzinfo=timezone.utc)
-    )
+    utc_anchor: Final = _setup_timezone(anchor, "UTC")[0]
     periods: Final = (current_time.astimezone(timezone.utc) - utc_anchor) // interval + 1
     return (utc_anchor + periods * interval).astimezone(current_time.tzinfo)
 
