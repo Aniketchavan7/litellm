@@ -219,59 +219,63 @@ async def update_budget(
         except ValueError as e:
             raise HTTPException(status_code=400, detail={"error": str(e)})
 
-    stored: Final = (
-        await BudgetRepository(prisma_client).table.find_unique(where={"budget_id": budget_obj.budget_id})
-        if (budget_obj.budget_duration is not None and "budget_reset_at" not in budget_obj.model_fields_set)
-        or (isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits)
-        else None
-    )
-    recomputed_reset_at: Final = (
-        {"budget_reset_at": get_budget_reset_time(budget_duration=budget_obj.budget_duration)}
-        if budget_obj.budget_duration is not None
-        and "budget_reset_at" not in budget_obj.model_fields_set
-        and not keeps_budget_reset(
-            budget_obj.budget_duration,
-            stored.budget_duration if stored is not None else None,
-            stored.budget_reset_at if stored is not None else None,
+    async with prisma_client.writer_db.tx() as transaction:
+        await transaction.query_raw(
+            'SELECT budget_id FROM "LiteLLM_BudgetTable" WHERE budget_id = $1 FOR UPDATE', budget_obj.budget_id
         )
-        else MappingProxyType({"budget_reset_at": None})
-        if "budget_duration" in budget_obj.model_fields_set
-        and budget_obj.budget_duration is None
-        and "budget_reset_at" not in budget_obj.model_fields_set
-        else {}
-    )
-
-    budget_obj_jsonified: Final = _WRITE_VALUES.validate_python(
-        jsonify_object(
-            {
-                **budget_obj.model_dump(exclude_unset=True),
-                **recomputed_reset_at,
-                "updated_by": user_api_key_dict.user_id or litellm_proxy_admin_name,
-            }
+        stored: Final = (
+            await transaction.litellm_budgettable.find_unique(where={"budget_id": budget_obj.budget_id})
+            if (budget_obj.budget_duration is not None and "budget_reset_at" not in budget_obj.model_fields_set)
+            or (isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits)
+            else None
         )
-    )
-
-    window_data: Final = (
-        {
-            "budget_limits": budget_limit_json(
-                initialize_budget_limits(
-                    carry_budget_limit_resets(
-                        budget_obj.budget_limits,
-                        (_STORED_LIMITS.validate_python(stored.budget_limits) or ()) if stored is not None else (),
-                    ),
-                    get_budget_reset_settings(),
-                    datetime.now(timezone.utc),
-                )
+        recomputed_reset_at: Final = (
+            {"budget_reset_at": get_budget_reset_time(budget_duration=budget_obj.budget_duration)}
+            if budget_obj.budget_duration is not None
+            and "budget_reset_at" not in budget_obj.model_fields_set
+            and not keeps_budget_reset(
+                budget_obj.budget_duration,
+                stored.budget_duration if stored is not None else None,
+                stored.budget_reset_at if stored is not None else None,
             )
-        }
-        if isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits is not None
-        else {}
-    )
-    if isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits:
-        await validate_budget_windows_update(prisma_client.db, budget_obj.budget_id)
-    response: Final = await BudgetRepository(prisma_client).table.update(
-        where={"budget_id": budget_obj.budget_id}, data={**budget_obj_jsonified, **window_data}
-    )
+            else MappingProxyType({"budget_reset_at": None})
+            if "budget_duration" in budget_obj.model_fields_set
+            and budget_obj.budget_duration is None
+            and "budget_reset_at" not in budget_obj.model_fields_set
+            else {}
+        )
+
+        budget_obj_jsonified: Final = _WRITE_VALUES.validate_python(
+            jsonify_object(
+                {
+                    **budget_obj.model_dump(exclude_unset=True),
+                    **recomputed_reset_at,
+                    "updated_by": user_api_key_dict.user_id or litellm_proxy_admin_name,
+                }
+            )
+        )
+
+        window_data: Final = (
+            {
+                "budget_limits": budget_limit_json(
+                    initialize_budget_limits(
+                        carry_budget_limit_resets(
+                            budget_obj.budget_limits,
+                            (_STORED_LIMITS.validate_python(stored.budget_limits) or ()) if stored is not None else (),
+                        ),
+                        get_budget_reset_settings(),
+                        datetime.now(timezone.utc),
+                    )
+                )
+            }
+            if isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits is not None
+            else {}
+        )
+        if isinstance(budget_obj, BudgetWriteRequest) and budget_obj.budget_limits:
+            await validate_budget_windows_update(transaction, budget_obj.budget_id)
+        response: Final = await transaction.litellm_budgettable.update(
+            where={"budget_id": budget_obj.budget_id}, data={**budget_obj_jsonified, **window_data}
+        )
     members: Final = await CustomerMemberRepository(prisma_client).table.find_many(
         where={
             "OR": (

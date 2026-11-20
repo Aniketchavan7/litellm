@@ -2,8 +2,9 @@
 
 import json
 import types
-from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Final
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,6 +46,12 @@ def client_and_mocks(monkeypatch):
     )
 
     mock_prisma.writer_db = mock_prisma.db
+
+    @asynccontextmanager
+    async def transaction() -> AsyncIterator[types.SimpleNamespace]:
+        yield mock_prisma.writer_db
+
+    mock_prisma.writer_db.tx = transaction
 
     # Monkeypatch Mocked Prisma client into the server module
     monkeypatch.setattr(ps, "prisma_client", mock_prisma)
@@ -538,6 +545,51 @@ def test_shared_budget_cap_edit_keeps_the_saved_schedule(
     assert response.status_code == 200
     assert written["max_budget"] == 20
     assert "budget_reset_at" not in written
+
+
+def test_daily_budget_edit_does_not_keep_a_monthly_reset_from_a_lagging_replica(
+    client_and_mocks: tuple[TestClient, MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litellm.proxy.common_utils import timezone_utils
+
+    client, database, reader_table = client_and_mocks
+    now: Final = datetime(2026, 11, 3, 5, 15, tzinfo=timezone.utc)
+    daily_reset: Final = datetime(2026, 11, 4, tzinfo=timezone.utc)
+    monthly_reset: Final = datetime(2026, 12, 1, tzinfo=timezone.utc)
+
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(timezone_utils, "datetime", FixedClock)
+    reader_table.find_unique.return_value = types.SimpleNamespace(
+        budget_duration="1d",
+        budget_reset_at=daily_reset,
+    )
+    writer_table: Final = MagicMock()
+    writer_table.find_unique = AsyncMock(
+        return_value=types.SimpleNamespace(
+            budget_duration="30d",
+            budget_reset_at=monthly_reset,
+        )
+    )
+
+    async def write(*, where: Mapping[str, object], data: Mapping[str, object]) -> Mapping[str, object]:
+        return {"budget_reset_at": monthly_reset, **where, **data}
+
+    reader_table.update = AsyncMock(side_effect=write)
+    writer_table.update = AsyncMock(side_effect=write)
+    database.writer_db = types.SimpleNamespace(
+        **{**vars(database.db), "litellm_budgettable": writer_table},
+    )
+
+    response: Final = client.post("/budget/update", json={"budget_id": "lagging-schedule", "budget_duration": "1d"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["budget_duration"] == "1d"
+    assert datetime.fromisoformat(response.json()["budget_reset_at"]) == daily_reset
 
 
 @pytest.mark.asyncio

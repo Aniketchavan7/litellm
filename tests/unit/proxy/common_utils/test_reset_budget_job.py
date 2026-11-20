@@ -3,7 +3,8 @@ import itertools
 import json
 import sys
 import types
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from typing import Any, Dict, Final, List, Optional, TypeVar, cast
@@ -4362,7 +4363,13 @@ class _EndUserLedger:
 
         self.client = types.SimpleNamespace(
             writer_db=types.SimpleNamespace(
-                litellm_budgettable=types.SimpleNamespace(find_many=self._find_budgets),
+                litellm_budgettable=types.SimpleNamespace(
+                    find_many=self._find_budgets,
+                    find_unique=lambda where: _async_value(self.budgets.get(where["budget_id"])),
+                    update=self._write_budget,
+                ),
+                tx=self._transaction,
+                query_raw=AsyncMock(return_value=[]),
             ),
             db=types.SimpleNamespace(
                 litellm_budgettable=types.SimpleNamespace(
@@ -4386,6 +4393,10 @@ class _EndUserLedger:
             ),
             get_data=self._due_budgets,
         )
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[types.SimpleNamespace]:
+        yield self.client.writer_db
 
     def spend(self) -> dict[str, _Cell]:
         return {user_id: row["spend"] for user_id, row in self.rows.items()}
