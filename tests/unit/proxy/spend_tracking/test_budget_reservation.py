@@ -848,3 +848,26 @@ def test_customer_elapsed_windows_share_the_persisted_calendar_window(duration: 
 
     assert counter.window_start == reset - timedelta(hours=1)
     assert get_budget_window_start(stored, settings) == counter.window_start
+
+
+@pytest.mark.parametrize(
+    "now,expected_start,expected_end",
+    (
+        ("2026-11-01T05:15:00Z", "2026-11-01T05:00:00Z", "2026-11-01T06:00:00Z"),
+        ("2026-11-01T06:15:00Z", "2026-11-01T06:00:00Z", "2026-11-01T07:00:00Z"),
+        ("2026-03-08T06:45:00Z", "2026-03-08T06:00:00Z", "2026-03-08T07:00:00Z"),
+    ),
+)
+def test_new_customer_hourly_window_includes_current_usage_through_dst(
+    now: str, expected_start: str, expected_end: str
+) -> None:
+    counter: Final = customer_window_counters(
+        "customer_team",
+        "hourly-team",
+        (BudgetLimit(budget_duration="1h", max_budget=1),),
+        now=datetime.fromisoformat(now),
+        reset_settings=BudgetResetSettings(timezone="America/New_York"),
+    )[0]
+
+    assert counter.window_start == datetime.fromisoformat(expected_start)
+    assert counter.reset_at == datetime.fromisoformat(expected_end)

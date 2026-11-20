@@ -110,9 +110,9 @@ def get_next_standardized_reset_time(
 
     All durations will reset at predictable intervals, aligned from the current time:
     - Nd: If N=1, reset at the next `reset_time_of_day`; if N>1, reset every N days from now
-    - Nh: Every N hours, aligned to hour boundaries (e.g., 1:00, 2:00)
-    - Nm: Every N minutes, aligned to minute boundaries (e.g., 1:05, 1:10)
-    - Ns: Every N seconds, aligned to second boundaries
+    - Nh: Every N elapsed hours, aligned from local midnight
+    - Nm: Every N elapsed minutes, aligned from the current local hour
+    - Ns: Every N elapsed seconds, aligned from the current local minute
 
     Parameters:
     - duration: Duration string (e.g. "30s", "30m", "30h", "30d")
@@ -147,11 +147,15 @@ def get_next_standardized_reset_time(
     elif unit == "w":
         return _handle_day_reset(current_time, base_midnight, value * 7, reset_time_of_day)
     elif unit == "h":
-        return _handle_hour_reset(current_time, base_midnight, value)
+        return _next_elapsed_reset(current_time, base_midnight.replace(fold=0), timedelta(hours=value))
     elif unit == "m":
-        return _handle_minute_reset(current_time, base_midnight, value)
+        return _next_elapsed_reset(
+            current_time, current_time.replace(minute=0, second=0, microsecond=0), timedelta(minutes=value)
+        )
     elif unit == "s":
-        return _handle_second_reset(current_time, base_midnight, value)
+        return _next_elapsed_reset(
+            current_time, current_time.replace(second=0, microsecond=0), timedelta(seconds=value)
+        )
     elif unit == "mo":
         return _handle_month_reset(current_time, base_midnight, value, reset_time_of_day)
     else:
@@ -341,97 +345,13 @@ def _handle_day_reset(
         return _apply_time_of_day(base_midnight + timedelta(days=value), reset_time_of_day)
 
 
-def _handle_hour_reset(current_time: datetime, base_midnight: datetime, value: int) -> datetime:
-    """Handle hour-based reset times."""
-    # Handle zero value - immediate expiration
-    if value == 0:
+def _next_elapsed_reset(current_time: datetime, anchor: datetime, interval: timedelta) -> datetime:
+    """Advance elapsed units on the UTC timeline, including repeated and skipped local hours."""
+    if interval == timedelta(0):
         return current_time
-
-    current_hour: Final = current_time.hour
-    current_minute: Final = current_time.minute
-    current_second: Final = current_time.second
-    current_microsecond: Final = current_time.microsecond
-
-    # Calculate next hour aligned with the value
-    if current_minute == 0 and current_second == 0 and current_microsecond == 0:
-        next_hour = current_hour + value - (current_hour % value) if current_hour % value != 0 else current_hour + value
-    else:
-        next_hour = current_hour + value - (current_hour % value) if current_hour % value != 0 else current_hour + value
-
-    # Handle overnight case
-    if next_hour >= 24:
-        return base_midnight + timedelta(hours=next_hour)
-
-    return current_time.replace(hour=next_hour, minute=0, second=0, microsecond=0)
-
-
-def _handle_minute_reset(current_time: datetime, base_midnight: datetime, value: int) -> datetime:
-    """Handle minute-based reset times."""
-    # Handle zero value - immediate expiration
-    if value == 0:
-        return current_time
-
-    current_hour: Final = current_time.hour
-    current_minute: Final = current_time.minute
-    current_second: Final = current_time.second
-    current_microsecond: Final = current_time.microsecond
-
-    # Calculate next minute aligned with the value
-    if current_second == 0 and current_microsecond == 0:
-        next_minute = (
-            current_minute + value - (current_minute % value) if current_minute % value != 0 else current_minute + value
-        )
-    else:
-        next_minute = (
-            current_minute + value - (current_minute % value) if current_minute % value != 0 else current_minute + value
-        )
-
-    # Handle hour rollover
-    next_hour = current_hour + (next_minute // 60)
-    next_minute = next_minute % 60
-
-    # Handle overnight case
-    if next_hour >= 24:
-        return base_midnight + timedelta(hours=next_hour, minutes=next_minute)
-
-    return current_time.replace(hour=next_hour, minute=next_minute, second=0, microsecond=0)
-
-
-def _handle_second_reset(current_time: datetime, base_midnight: datetime, value: int) -> datetime:
-    """Handle second-based reset times."""
-    # Handle zero value - immediate expiration
-    if value == 0:
-        return current_time
-
-    current_hour: Final = current_time.hour
-    current_minute: Final = current_time.minute
-    current_second: Final = current_time.second
-    current_microsecond: Final = current_time.microsecond
-
-    # Calculate next second aligned with the value
-    if current_microsecond == 0:
-        next_second = (
-            current_second + value - (current_second % value) if current_second % value != 0 else current_second + value
-        )
-    else:
-        next_second = (
-            current_second + value - (current_second % value) if current_second % value != 0 else current_second + value
-        )
-
-    # Handle minute rollover
-    additional_minutes: Final = next_second // 60
-    next_second = next_second % 60
-    next_minute = current_minute + additional_minutes
-
-    # Handle hour rollover
-    next_hour = current_hour + (next_minute // 60)
-    next_minute = next_minute % 60
-
-    # Handle overnight case
-    if next_hour >= 24:
-        return base_midnight + timedelta(hours=next_hour, minutes=next_minute, seconds=next_second)
-
-    return current_time.replace(hour=next_hour, minute=next_minute, second=next_second, microsecond=0)
+    utc_anchor: Final = anchor.astimezone(timezone.utc)
+    periods: Final = (current_time.astimezone(timezone.utc) - utc_anchor) // interval + 1
+    return (utc_anchor + periods * interval).astimezone(current_time.tzinfo)
 
 
 def _handle_month_reset(

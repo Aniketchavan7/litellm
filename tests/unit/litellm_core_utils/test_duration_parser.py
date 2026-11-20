@@ -638,3 +638,17 @@ def test_elapsed_window_bounds_do_not_depend_on_passing_the_zone_separately(dura
     assert get_budget_window_start(duration, reset).astimezone(timezone.utc) == start
     assert get_budget_window_end(duration, start, zone.key, reset_at=reset) == reset.astimezone(timezone.utc)
     assert get_budget_window_end(duration, start, zone.key) == reset.astimezone(timezone.utc)
+
+
+@pytest.mark.parametrize("duration", ("1h", "60m", "3600s"))
+@pytest.mark.parametrize(
+    "now",
+    ("2026-11-01T05:15:00Z", "2026-11-01T06:15:00Z", "2026-03-08T06:45:00Z", "2026-03-08T07:15:00Z"),
+)
+def test_scheduled_elapsed_window_contains_now_through_both_dst_transitions(duration: str, now: str) -> None:
+    instant: Final = datetime.fromisoformat(now)
+    end: Final = get_next_standardized_reset_time(duration, instant, "America/New_York")
+    start: Final = get_budget_window_start(duration, end)
+
+    assert start.astimezone(timezone.utc) <= instant < end.astimezone(timezone.utc)
+    assert end.astimezone(timezone.utc) - start.astimezone(timezone.utc) == timedelta(hours=1)

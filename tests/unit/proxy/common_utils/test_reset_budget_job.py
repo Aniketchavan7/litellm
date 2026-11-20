@@ -77,6 +77,40 @@ async def test_scalar_and_window_resets_do_not_reopen_the_fall_back_allowance(
     assert (await store.read(counter))[0] == 10.0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "now,previous_reset,expected",
+    (
+        ("2026-11-01T05:15:00Z", "2026-11-01T05:00:00Z", "2026-11-01T06:00:00Z"),
+        ("2026-11-01T06:15:00Z", "2026-11-01T06:00:00Z", "2026-11-01T07:00:00Z"),
+    ),
+)
+async def test_scalar_and_inline_hourly_resets_follow_both_occurrences_of_the_hour(
+    now: str, previous_reset: str, expected: str
+) -> None:
+    instant: Final = datetime.fromisoformat(now)
+    settings: Final = BudgetResetSettings(timezone="America/New_York")
+    key: Final = LiteLLM_VerificationToken(
+        token="hourly-key", spend=10.0, max_budget=10.0, budget_duration="1h",
+        budget_reset_at=datetime.fromisoformat(previous_reset),
+    )
+    window: Final = {"budget_duration": "1h", "max_budget": 10.0, "reset_at": previous_reset}
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+
+    scalar: Final = await ResetBudgetJob._reset_budget_for_key(key, instant, settings)
+    changed: Final = await ResetBudgetJob._reset_expired_window(
+        window, "spend:key:hourly-key:window:1h", FakeSpendCounters().store(), instant, settings,
+        client, reset_budget_job_module.Litellm_EntityType.KEY, "hourly-key",
+    )
+
+    assert scalar is not None and scalar.budget_reset_at is not None
+    assert scalar.budget_reset_at.astimezone(timezone.utc) == datetime.fromisoformat(expected)
+    assert changed and datetime.fromisoformat(window["reset_at"]) == scalar.budget_reset_at.astimezone(timezone.utc)
+    assert get_budget_window_start(window, settings) == datetime.fromisoformat(previous_reset)
+
+
 @pytest.mark.parametrize("duration,end_month,end_day", (("1d", 11, 2), ("1mo", 12, 1), ("12mo", 1, 1)))
 def test_budget_table_window_uses_the_sweep_clock(duration: str, end_month: int, end_day: int) -> None:
     zone: Final = ZoneInfo("America/New_York")
@@ -2031,6 +2065,7 @@ def _make_counter_invalidation_job(monkeypatch):
     fake_module = types.ModuleType("litellm.proxy.proxy_server")
     fake_module.spend_counter_store = spend_counter_cache.store()
     fake_module.user_api_key_cache = user_api_key_cache
+    fake_module.redis_usage_cache = None
     monkeypatch.setitem(sys.modules, "litellm.proxy.proxy_server", fake_module)
 
     spend_counter_cache.user_api_key_cache = user_api_key_cache  # pyright: ignore[reportAttributeAccessIssue]  # the test reads both caches off one handle
