@@ -1785,15 +1785,11 @@ def test_reset_budget_windows_rolls_the_key_window_spend_row(monkeypatch):
     assert (entity_type, entity_id, window_duration) == ("key", "sk-expired", "1d")
     assert "spend = 0" in " ".join(query.split())
 
-    # window_start is the start of the window that just began: new reset_at minus the duration.
     written_windows = json.loads(
         prisma_client.db.litellm_verificationtoken.update.await_args.kwargs["data"]["budget_limits"]
     )
-    new_reset_at = datetime.fromisoformat(written_windows[0]["reset_at"].replace("Z", "+00:00")).replace(tzinfo=None)
-    assert new_window_start == pytest.approx(
-        new_reset_at - timedelta(days=1),
-        abs=timedelta(seconds=1),
-    )
+    assert new_window_start == (now - timedelta(minutes=5)).replace(microsecond=0)
+    assert datetime.fromisoformat(written_windows[0]["window_start"]).replace(tzinfo=None) == new_window_start
 
 
 def test_reset_budget_windows_roll_is_conditional_on_an_older_stored_window(monkeypatch):
@@ -5965,3 +5961,33 @@ async def test_reset_budget_for_litellm_team_members_called():
     assert len(team_member_writes) == 1
     assert team_member_writes[0]["where"]["budget_id"]["in"] == ["budget1"]
     assert team_member_writes[0]["data"] == {"spend": 0}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "duration,start,end,next_end",
+    (
+        ("30d", "2026-07-15T12:00:00Z", "2026-08-14T12:00:00Z", "2026-09-01T04:00:00Z"),
+        ("1d", "2026-10-31T16:00:00Z", "2026-11-01T16:00:00Z", "2026-11-02T05:00:00Z"),
+    ),
+)
+async def test_scheduled_rollover_never_reopens_a_manually_cleared_period(
+    duration: str, start: str, end: str, next_end: str
+) -> None:
+    window: Final = {"budget_duration": duration, "max_budget": 1.0, "window_start": start, "reset_at": end}
+    store: Final = FakeSpendCounters().store()
+    counter: Final = f"spend:key:manual-key:window:{duration}"
+    await store.set(counter, 1.0)
+    client: Final = MagicMock(spec=PrismaClient)
+    client.db = MagicMock()
+    client.db.execute_raw = AsyncMock(return_value=1)
+
+    changed: Final = await ResetBudgetJob._reset_expired_window(
+        window, counter, store, datetime.fromisoformat(end), BudgetResetSettings(timezone="America/New_York"),
+        client, reset_budget_job_module.Litellm_EntityType.KEY, "manual-key"
+    )
+
+    assert changed
+    assert get_budget_window_start(window) == datetime.fromisoformat(end)
+    assert datetime.fromisoformat(window["reset_at"]) == datetime.fromisoformat(next_end)
+    assert (await store.read(counter))[0] == 0.0

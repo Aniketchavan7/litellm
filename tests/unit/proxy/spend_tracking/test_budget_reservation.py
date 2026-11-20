@@ -25,7 +25,7 @@ from litellm.proxy.common_utils.user_api_key_cache import (
     UserApiKeyCache,
     team_membership_reservation_cache_key,
 )
-from litellm.proxy.common_utils.timezone_utils import BudgetResetSettings
+from litellm.proxy.common_utils.timezone_utils import BudgetResetSettings, get_budget_window_reset_fields
 from litellm.proxy.spend_tracking.budget_reservation import (
     _get_budget_counters,
     _get_team_member_budget_counter,
@@ -595,7 +595,9 @@ def test_customer_and_inline_monthly_windows_count_the_same_calendar_period(
     )
 
     assert counters[0].window_start == datetime.fromisoformat(expected)
-    assert get_budget_window_start(limit.model_dump(), settings) == counters[0].window_start
+    assert get_budget_window_start(
+        {**limit.model_dump(), **get_budget_window_reset_fields("1mo", reset_at=limit.reset_at, settings=settings)}, settings
+    ) == counters[0].window_start
     assert counters[0].reset_at == datetime.fromisoformat(reset_at)
 
 
@@ -814,3 +816,35 @@ def test_fixed_budget_window_requires_duration_and_reset_boundary(window: object
     from litellm.proxy.spend_tracking.budget_reservation import fixed_budget_window
 
     assert fixed_budget_window(window) is None
+
+
+@pytest.mark.parametrize(
+    "duration,end,start",
+    (
+        ("30d", "2026-08-14T12:00:00Z", "2026-07-15T12:00:00Z"),
+        ("1d", "2026-03-08T17:00:00Z", "2026-03-07T17:00:00Z"),
+        ("1d", "2026-11-01T16:00:00Z", "2026-10-31T16:00:00Z"),
+    ),
+)
+def test_existing_windows_keep_their_elapsed_start_until_rollover(duration: str, end: str, start: str) -> None:
+    assert get_budget_window_start(
+        {"budget_duration": duration, "reset_at": end}, BudgetResetSettings(timezone="America/New_York")
+    ) == datetime.fromisoformat(start)
+
+
+@pytest.mark.parametrize("duration", ("1h", "60m", "3600s"))
+@pytest.mark.parametrize(
+    "end,now",
+    (("2026-11-01T07:00:00Z", "2026-11-01T06:15:00Z"), ("2026-03-08T07:30:00Z", "2026-03-08T07:15:00Z")),
+)
+def test_customer_elapsed_windows_share_the_persisted_calendar_window(duration: str, end: str, now: str) -> None:
+    settings: Final = BudgetResetSettings(timezone="America/New_York")
+    reset: Final = datetime.fromisoformat(end)
+    limit: Final = BudgetLimit(budget_duration=duration, max_budget=1, reset_at=reset)
+    counter: Final = customer_window_counters(
+        "customer_team", "hourly-team", (limit,), now=datetime.fromisoformat(now), reset_settings=settings
+    )[0]
+    stored: Final = {"budget_duration": duration, **get_budget_window_reset_fields(duration, reset_at=reset, settings=settings)}
+
+    assert counter.window_start == reset - timedelta(hours=1)
+    assert get_budget_window_start(stored, settings) == counter.window_start

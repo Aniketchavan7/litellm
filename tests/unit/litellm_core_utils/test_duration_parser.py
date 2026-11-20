@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Final
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -623,3 +623,18 @@ def test_daily_reset_resolves_a_half_hour_gap() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("duration", ("1h", "60m", "3600s"))
+@pytest.mark.parametrize(
+    "end",
+    ("2026-11-01T06:30:00Z", "2026-11-01T07:30:00Z", "2026-03-08T07:30:00Z"),
+)
+def test_elapsed_window_bounds_do_not_depend_on_passing_the_zone_separately(duration: str, end: str) -> None:
+    zone: Final = ZoneInfo("America/New_York")
+    reset: Final = datetime.fromisoformat(end).astimezone(zone)
+    start: Final = datetime.fromisoformat(end) - timedelta(hours=1)
+
+    assert get_budget_window_start(duration, reset).astimezone(timezone.utc) == start
+    assert get_budget_window_end(duration, start, zone.key, reset_at=reset) == reset.astimezone(timezone.utc)
+    assert get_budget_window_end(duration, start, zone.key) == reset.astimezone(timezone.utc)

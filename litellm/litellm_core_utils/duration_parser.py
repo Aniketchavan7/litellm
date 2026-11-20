@@ -189,9 +189,6 @@ def get_budget_window_start(
     `get_next_standardized_reset_time` used to pick it: `30d` and `Nmo` span calendar
     months and a duration it does not recognize resets at the next midnight."""
     boundary: Final = _setup_timezone(reset_at, timezone_str)[0] if timezone_str is not None else reset_at
-    _, unit = _parse_duration(normalize_duration(duration))
-    if timezone_str is not None and unit in ("h", "m", "s"):
-        return _shift_budget_window(duration, boundary.astimezone(timezone.utc), -1)
     return _shift_budget_window(duration, boundary, -1, reset_time_of_day)
 
 
@@ -214,8 +211,10 @@ def get_budget_window_end(
 def _shift_budget_window(
     duration: str, moment: datetime, direction: int, reset_time_of_day: time | None = None
 ) -> datetime:
-    boundary: Final = normalize_budget_window_start(moment)
     value, unit = _parse_duration(normalize_duration(duration))
+    boundary: Final = normalize_budget_window_start(
+        moment.astimezone(timezone.utc) if moment.tzinfo is not None and unit in ("h", "m", "s") else moment
+    )
     if value is None:
         return boundary + timedelta(days=direction)
     match unit:
@@ -287,7 +286,7 @@ def _parse_duration(duration: str) -> tuple[int | None, str | None]:
 
 
 def _apply_time_of_day(dt: datetime, reset_time_of_day: time) -> datetime:
-    """Set the wall-clock time of `dt` to `reset_time_of_day`, keeping its date and tzinfo."""
+    """Resolve repeated times to their first occurrence and move missing times forward through the gap."""
     candidate: Final = dt.replace(
         hour=reset_time_of_day.hour,
         minute=reset_time_of_day.minute,

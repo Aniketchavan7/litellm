@@ -50,6 +50,7 @@ from litellm.proxy.common_utils.timezone_utils import (
     BudgetResetSettings,
     compute_budget_reset_at,
     get_budget_reset_settings,
+    get_budget_window_reset_fields,
 )
 from litellm.proxy.common_utils.user_api_key_cache import (
     AUTH_OBJECTS_TARGET,
@@ -1881,7 +1882,7 @@ class ResetBudgetJob:
     @staticmethod
     @with_service_target(SPEND_COUNTERS_TARGET)
     async def _reset_expired_window(
-        window: dict,
+        window: dict[str, object],
         counter_key: str,
         spend_counter_store: SpendCounterStore,
         now: datetime,
@@ -1899,14 +1900,21 @@ class ResetBudgetJob:
             await spend_counter_store.set(counter_key, new_value)
         except Exception as redis_err:
             verbose_proxy_logger.warning("Failed to reset Redis counter %s: %s", counter_key, redis_err)
-        window["reset_at"] = next_reset_at.isoformat()
+        duration: Final = str(window["budget_duration"])
+        fields: Final = get_budget_window_reset_fields(duration, reset_at=next_reset_at, settings=reset_settings)
+        window_start: Final = max(
+            datetime.fromisoformat(fields["window_start"]),
+            _as_utc(datetime.fromisoformat(str(window["reset_at"]).replace("Z", "+00:00"))),
+        )
+        window.update({**fields, "window_start": window_start.isoformat()})
         await ResetBudgetJob._roll_window_spend_row(
             prisma_client=prisma_client,
             entity_type=entity_type,
             entity_id=entity_id,
-            budget_duration=window["budget_duration"],
+            budget_duration=duration,
             next_reset_at=next_reset_at,
             reset_settings=reset_settings,
+            window_start=window_start,
         )
         return True
 
@@ -1931,6 +1939,7 @@ class ResetBudgetJob:
         budget_duration: str,
         next_reset_at: datetime,
         reset_settings: BudgetResetSettings | None = None,
+        window_start: datetime | None = None,
     ) -> None:
         """Move this window's LiteLLM_BudgetWindowSpend row onto the window
         that just started, so the maintained total the read path uses starts
@@ -1942,8 +1951,12 @@ class ResetBudgetJob:
         """
         try:
             settings: Final = reset_settings or get_budget_reset_settings()
-            window_start: Final = get_budget_window_start(
-                budget_duration, next_reset_at, settings.timezone, settings.reset_time_of_day
+            start: Final = (
+                window_start
+                if window_start is not None
+                else get_budget_window_start(
+                    budget_duration, next_reset_at, settings.timezone, settings.reset_time_of_day
+                )
             )
         except (ValueError, OverflowError) as e:
             verbose_proxy_logger.warning("Unparseable budget_duration %s: %s", budget_duration, e)
@@ -1954,7 +1967,7 @@ class ResetBudgetJob:
                 entity_type=entity_type.value,
                 entity_id=entity_id,
                 window_duration=budget_duration,
-                new_window_start=normalize_budget_window_start(window_start),
+                new_window_start=normalize_budget_window_start(start),
             )
         except Exception as e:  # noqa: BLE001  # the row is best effort; counter resets must still land
             verbose_proxy_logger.warning(

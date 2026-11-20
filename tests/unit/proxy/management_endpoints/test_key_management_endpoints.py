@@ -18,7 +18,7 @@ from pydantic import JsonValue, ValidationError
 import litellm
 from litellm.caching.in_memory_cache import InMemoryCache
 from litellm.constants import KEY_EXPIRY_ALERT_MAX_DAYS, PROXY_DB_LOOKUP_STALL_WINDOW_SECONDS
-from litellm.litellm_core_utils.duration_parser import duration_in_seconds
+from litellm.litellm_core_utils.duration_parser import duration_in_seconds, normalize_budget_window_start
 from litellm.models.object_permission import LiteLLM_ObjectPermissionTable
 from litellm.models.project import LiteLLM_ProjectTable
 from litellm.proxy._types import (
@@ -59,6 +59,8 @@ from litellm.proxy.common_utils.user_api_key_cache import (
 from litellm.proxy.db.db_lookup_gate import db_lookup_stall_tracker
 from litellm.proxy.management_endpoints.key_management_endpoints import (
     KeyProjectBindingError,
+    _advance_one_key_budget_window,
+    _window_with_reset_at,
     _can_user_query_key_info,
     _check_key_project_team,
     _check_key_project_team_on_mutation,
@@ -8999,7 +9001,7 @@ async def test_reset_key_spend_resets_budget_windows(monkeypatch):
     assert persisted_windows[0]["budget_duration"] == "1d"
     assert persisted_windows[0]["max_budget"] == 50.0
     persisted_reset_at = datetime.fromisoformat(persisted_windows[0]["reset_at"])
-    assert before_call + timedelta(days=1) <= persisted_reset_at <= after_call + timedelta(days=1)
+    assert normalize_budget_window_start(before_call) + timedelta(days=1) <= persisted_reset_at <= after_call + timedelta(days=1)
 
 
 @pytest.mark.asyncio
@@ -25120,3 +25122,45 @@ def test_public_key_requests_cannot_assign_the_server_owned_key_identity(
 ) -> None:
     request: Final = request_type.model_validate({"key": "key-reference", "key_id": "caller-supplied-identity"})
     assert "key_id" not in request.model_dump(exclude_unset=True)
+
+
+@pytest.mark.parametrize(
+    "duration,now,expected_end",
+    (
+        ("30d", "2026-07-15T12:00:00Z", "2026-08-14T12:00:00Z"),
+        ("1mo", "2026-01-31T12:00:00Z", "2026-02-28T12:00:00Z"),
+        ("12mo", "2028-02-29T12:00:00Z", "2029-02-28T12:00:00Z"),
+        ("1d", "2026-03-07T17:00:00Z", "2026-03-08T17:00:00Z"),
+        ("1d", "2026-10-31T16:00:00Z", "2026-11-01T16:00:00Z"),
+        ("1h", "2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"),
+    ),
+)
+def test_manual_reset_keeps_its_exact_start_after_serialization(duration: str, now: str, expected_end: str) -> None:
+    from litellm.models.team import BudgetLimitEntry
+    from litellm.proxy.common_utils.timezone_utils import BudgetResetSettings
+    from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
+
+    start: Final = datetime.fromisoformat(now)
+    reset: Final = _advance_one_key_budget_window({"budget_duration": duration, "max_budget": 1.0}, start)
+    stored: Final = BudgetLimitEntry.model_validate_json(json.dumps(reset))
+
+    assert stored.reset_at == datetime.fromisoformat(expected_end)
+    assert get_budget_window_start(stored, BudgetResetSettings(timezone="America/New_York")) == start
+    assert get_budget_window_start(stored, BudgetResetSettings(timezone="Asia/Kolkata")) == start
+
+
+def test_editing_a_manually_reset_key_keeps_the_server_start() -> None:
+    from litellm.models.team import BudgetLimitEntry
+    from litellm.proxy.spend_tracking.budget_reservation import get_budget_window_start
+
+    start: Final = datetime(2099, 7, 15, 12, tzinfo=timezone.utc)
+    stored: Final = BudgetLimitEntry.model_validate(
+        _advance_one_key_budget_window({"budget_duration": "30d", "max_budget": 1.0}, start)
+    )
+    edited: Final = _window_with_reset_at(
+        {"budget_duration": "30d", "max_budget": 2.0, "window_start": "2100-01-01T00:00:00Z"}, (stored,)
+    )
+
+    assert edited["max_budget"] == 2.0
+    assert get_budget_window_start(edited) == start
+    assert datetime.fromisoformat(str(edited["reset_at"])) == stored.reset_at
