@@ -36,7 +36,6 @@ from litellm.proxy.common_utils.timezone_utils import (
     get_budget_reset_settings,
     get_budget_reset_time,
 )
-from litellm.proxy.common_utils.user_api_key_cache import app_budget_cache_key
 from litellm.proxy.management_endpoints.common_utils import (  # noqa: F401  # legacy module exports
     _user_has_admin_view,  # pyright: ignore[reportPrivateUsage,reportUnusedImport]  # backwards-compatible package export
     user_api_key_has_admin_view,
@@ -52,6 +51,7 @@ from litellm.proxy.management_helpers.customer_hierarchy import (
 )
 from litellm.proxy.management_helpers.utils import validate_budget_windows_update
 from litellm.proxy.utils import jsonify_object
+from litellm.redis.stores.auth_cache import AuthObject
 from litellm.repositories.budget_repository import BudgetRepository
 from litellm.repositories.chunked_in import IN_LIST_CHUNK_SIZE
 from litellm.repositories.prisma_protocols import TableActions
@@ -267,7 +267,7 @@ async def update_budget(
     response: Final = await BudgetRepository(prisma_client).table.update(
         where={"budget_id": budget_obj.budget_id}, data={**budget_obj_jsonified, **window_data}
     )
-    await evict_and_broadcast((app_budget_cache_key(budget_obj.budget_id),), user_api_key_cache)
+    await evict_and_broadcast((AuthObject.customer_app_budget(budget_obj.budget_id).key,), user_api_key_cache)
     members: Final = await CustomerMemberRepository(prisma_client).table.find_many(
         where={
             "OR": (
